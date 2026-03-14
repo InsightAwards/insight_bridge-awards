@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: insightbridge-awards
+    runtime: node
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: AI_APPROVAL_THRESHOLD
+        value: "65"
+      - key: TITLE_SIMILARITY_THRESHOLD
+        value: "0.6"
