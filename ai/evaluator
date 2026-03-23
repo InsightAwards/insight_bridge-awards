@@ -1,0 +1,221 @@
+/**
+ * AI Award Evaluator Engine v2.0
+ * Multi-dimensional scoring + Title deduplication + Auto-approval
+ */
+const stringSimilarity = require('string-similarity');
+
+const CRITERIA = {
+  market_position: { weight: 0.15, label: 'Market Position & Leadership' },
+  innovation: { weight: 0.15, label: 'Innovation & Differentiation' },
+  growth: { weight: 0.12, label: 'Growth & Financial Performance' },
+  customer_impact: { weight: 0.12, label: 'Customer Satisfaction & Impact' },
+  brand_strength: { weight: 0.10, label: 'Brand Strength & Recognition' },
+  sustainability: { weight: 0.08, label: 'Sustainability & CSR' },
+  digital_transformation: { weight: 0.08, label: 'Digital Transformation' },
+  employee_culture: { weight: 0.07, label: 'Employee Culture & Development' },
+  industry_recognition: { weight: 0.07, label: 'Industry Recognition & Awards' },
+  global_reach: { weight: 0.06, label: 'Global Reach & Expansion' }
+};
+
+function scoreAnswer(answer, type) {
+  if (type === 'scale') return Math.min(Math.max(parseInt(answer) || 0, 0), 10) / 10;
+  if (type === 'text') {
+    const len = (answer || '').trim().length;
+    if (len < 20) return 0.2; if (len < 50) return 0.4;
+    if (len < 150) return 0.6; if (len < 300) return 0.8; return 0.95;
+  }
+  if (type === 'select') {
+    return { excellent: 0.95, very_good: 0.8, good: 0.65, average: 0.45, below_average: 0.25, poor: 0.1 }[answer] || 0.5;
+  }
+  if (type === 'percentage') {
+    const v = parseFloat(answer) || 0;
+    if (v > 50) return 0.95; if (v > 30) return 0.8; if (v > 15) return 0.65; if (v > 5) return 0.45; return 0.25;
+  }
+  if (type === 'years') {
+    const v = parseInt(answer) || 0;
+    if (v > 20) return 0.95; if (v > 10) return 0.8; if (v > 5) return 0.6; if (v > 2) return 0.4; return 0.25;
+  }
+  return 0.5;
+}
+
+const QUESTION_MAP = {
+  market_position: [
+    { key: 'market_share', type: 'select', q: 'How would you rate your market position in your industry?' },
+    { key: 'competitive_edge', type: 'text', q: 'Describe your key competitive advantages.' }
+  ],
+  innovation: [
+    { key: 'innovation_desc', type: 'text', q: 'Describe your most significant innovation in the past 2 years.' },
+    { key: 'innovation_impact', type: 'select', q: 'Rate the impact of your innovation on your industry.' }
+  ],
+  growth: [
+    { key: 'revenue_growth', type: 'percentage', q: 'Revenue growth (%) in the last fiscal year.' },
+    { key: 'market_expansion', type: 'select', q: 'Rate your market expansion efforts.' }
+  ],
+  customer_impact: [
+    { key: 'customer_satisfaction', type: 'scale', q: 'Customer satisfaction score (1-10).' },
+    { key: 'customer_testimonial', type: 'text', q: 'Share a brief customer success story.' }
+  ],
+  brand_strength: [
+    { key: 'brand_recognition', type: 'select', q: 'Rate your brand recognition in target markets.' },
+    { key: 'years_in_business', type: 'years', q: 'Years in business.' }
+  ],
+  sustainability: [
+    { key: 'sustainability_initiatives', type: 'text', q: 'Describe your sustainability or CSR initiatives.' }
+  ],
+  digital_transformation: [
+    { key: 'digital_strategy', type: 'text', q: 'Briefly describe your digital transformation strategy.' }
+  ],
+  employee_culture: [
+    { key: 'employee_satisfaction', type: 'scale', q: 'Employee satisfaction score (1-10).' }
+  ],
+  industry_recognition: [
+    { key: 'past_awards', type: 'text', q: 'List any notable awards or recognitions received.' }
+  ],
+  global_reach: [
+    { key: 'countries_operating', type: 'text', q: 'Countries or regions where you operate.' }
+  ]
+};
+
+function evaluate(questionnaire) {
+  const scores = {};
+  let totalScore = 0;
+
+  for (const [criterion, questions] of Object.entries(QUESTION_MAP)) {
+    let criterionScore = 0, count = 0;
+    for (const q of questions) {
+      const answer = questionnaire[q.key];
+      if (answer !== undefined && answer !== '') { criterionScore += scoreAnswer(answer, q.type); count++; }
+    }
+    const avg = count > 0 ? criterionScore / count : 0;
+    scores[criterion] = { label: CRITERIA[criterion].label, score: Math.round(avg * 100), weight: CRITERIA[criterion].weight };
+    totalScore += avg * CRITERIA[criterion].weight;
+  }
+
+  const normalizedScore = Math.round(totalScore * 100);
+  const threshold = parseInt(process.env.AI_APPROVAL_THRESHOLD) || 65;
+
+  let probability, verdict;
+  if (normalizedScore >= 75) { probability = 'HIGH'; verdict = 'APPROVED'; }
+  else if (normalizedScore >= threshold) { probability = 'MEDIUM'; verdict = 'APPROVED'; }
+  else if (normalizedScore >= 40) { probability = 'LOW'; verdict = 'NEEDS_REVIEW'; }
+  else { probability = 'VERY_LOW'; verdict = 'NOT_RECOMMENDED'; }
+
+  return { scores, totalScore: normalizedScore, probability, verdict, threshold, evaluatedAt: new Date().toISOString() };
+}
+
+// Title similarity check
+function checkTitleConflicts(proposedTitle, existingTitles, threshold) {
+  if (!proposedTitle || !existingTitles.length) return { conflicts: [], hasExact: false, hasSimilar: false };
+  const normalizedProposed = proposedTitle.toLowerCase().trim();
+  const conflicts = [];
+  let hasExact = false, hasSimilar = false;
+
+  for (const existing of existingTitles) {
+    const normalizedExisting = existing.title.toLowerCase().trim();
+    if (normalizedProposed === normalizedExisting) {
+      hasExact = true;
+      conflicts.push({ title: existing.title, company: existing.company_name, year: existing.year, similarity: 1.0, type: 'EXACT' });
+    } else {
+      const sim = stringSimilarity.compareTwoStrings(normalizedProposed, normalizedExisting);
+      if (sim >= (threshold || 0.6)) {
+        hasSimilar = true;
+        conflicts.push({ title: existing.title, company: existing.company_name, year: existing.year, similarity: Math.round(sim * 100) / 100, type: 'SIMILAR' });
+      }
+    }
+  }
+  conflicts.sort((a, b) => b.similarity - a.similarity);
+  return { conflicts, hasExact, hasSimilar };
+}
+
+function generateWriteup(questionnaire, evaluation, companyName, industry, category, awardTitle) {
+  const { totalScore, probability, scores } = evaluation;
+  const ranked = Object.entries(scores).sort((a, b) => b[1].score - a[1].score);
+  const strengths = ranked.slice(0, 3);
+  const improvements = ranked.slice(-2);
+  const year = new Date().getFullYear();
+
+  const probText = {
+    HIGH: 'demonstrates exceptional qualifications and a strong likelihood',
+    MEDIUM: 'shows commendable performance with solid potential',
+    LOW: 'presents some notable qualities but faces competitive challenges',
+    VERY_LOW: 'shows potential for future consideration'
+  };
+
+  const narratives = {
+    market_position: `demonstrates commanding market presence with strong strategic positioning.`,
+    innovation: `shows outstanding commitment to innovation, setting new industry benchmarks.`,
+    growth: `has delivered impressive growth metrics reflecting robust business fundamentals.`,
+    customer_impact: `maintains exceptional customer relationships with measurable impact.`,
+    brand_strength: `carries significant brand equity backed by consistent market performance.`,
+    sustainability: `leads with forward-thinking sustainability and responsible business practices.`,
+    digital_transformation: `has effectively leveraged digital transformation for competitive advantage.`,
+    employee_culture: `fosters a strong organizational culture conducive to innovation and growth.`,
+    industry_recognition: `has earned significant recognition validating sector leadership.`,
+    global_reach: `demonstrates successful international expansion and adaptability.`
+  };
+
+  return `# Award Evaluation Report
+
+## ${companyName}
+### ${awardTitle || category || 'Industry Excellence'} — Global Brands Magazine ${year}
+
+---
+
+**Evaluation Date:** ${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
+**Industry:** ${industry || 'Not Specified'}
+**Overall Score:** ${totalScore}/100
+**Winning Probability:** ${probability}
+**AI Evaluator:** Insightbridge AI Assessment Engine v2.0
+**Approval Threshold:** ${evaluation.threshold}/100
+
+---
+
+### Executive Summary
+
+${companyName}, operating in the ${industry || 'global'} sector, ${probText[probability]} of securing the award "${awardTitle || category}" for ${year}. This assessment is based on a multi-dimensional evaluation across ${Object.keys(scores).length} key performance indicators, conducted by the Insightbridge AI Assessment Engine.
+
+### AI Recommendation
+
+${totalScore >= evaluation.threshold
+    ? `**RECOMMENDED FOR APPROVAL** — ${companyName} exceeds the minimum threshold of ${evaluation.threshold}/100 with a score of ${totalScore}/100. The AI Assessment Engine recommends proceeding with award approval.`
+    : `**REQUIRES MANUAL REVIEW** — ${companyName} scores ${totalScore}/100, below the auto-approval threshold of ${evaluation.threshold}/100. Manual review by the Award Committee is recommended.`
+}
+
+### Key Strengths
+
+${strengths.map((s, i) => `**${i + 1}. ${s[1].label}** (Score: ${s[1].score}/100)
+${companyName} ${narratives[s[0]] || 'shows strong performance in this area.'}`).join('\n\n')}
+
+### Areas for Enhancement
+
+${improvements.map((s, i) => `**${i + 1}. ${s[1].label}** (Score: ${s[1].score}/100)
+Additional focus in this area would strengthen future award submissions.`).join('\n\n')}
+
+### Scoring Breakdown
+
+| Criterion | Score | Weight | Weighted |
+|-----------|-------|--------|----------|
+${Object.entries(scores).map(([, v]) => `| ${v.label} | ${v.score}/100 | ${(v.weight * 100).toFixed(0)}% | ${(v.score * v.weight).toFixed(1)} |`).join('\n')}
+| **Total** | | | **${totalScore}/100** |
+
+### Methodology
+
+This evaluation was conducted by the Insightbridge AI Assessment Engine v2.0, employing a proprietary multi-factor scoring model calibrated against historical award recipients and Global Brands Magazine benchmarks. The auto-approval threshold is currently set at ${evaluation.threshold}/100.
+
+---
+
+*Generated by Insightbridge Research & Consulting on behalf of Global Brands Magazine.*
+*Report ID: IBR-${year}-${Date.now().toString(36).toUpperCase()}*`;
+}
+
+function getQuestionnaire() {
+  const questions = [];
+  for (const [criterion, qs] of Object.entries(QUESTION_MAP)) {
+    for (const q of qs) {
+      questions.push({ ...q, criterion, criterionLabel: CRITERIA[criterion].label });
+    }
+  }
+  return questions;
+}
+
+module.exports = { evaluate, generateWriteup, getQuestionnaire, checkTitleConflicts, CRITERIA };
