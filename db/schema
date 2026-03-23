@@ -1,0 +1,131 @@
+const Database = require('better-sqlite3');
+const path = require('path');
+const bcrypt = require('bcryptjs');
+const { v4: uuidv4 } = require('uuid');
+
+const DB_PATH = path.join(__dirname, 'awards.db');
+
+function initDB() {
+  const db = new Database(DB_PATH);
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      password TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'company',
+      company_name TEXT,
+      contact_person TEXT,
+      phone TEXT,
+      industry TEXT,
+      country TEXT,
+      website TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_login DATETIME,
+      is_active INTEGER DEFAULT 1,
+      created_by TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS submissions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      submitted_by TEXT,
+      submitted_by_role TEXT DEFAULT 'company',
+      status TEXT DEFAULT 'draft',
+      award_title TEXT,
+      award_category TEXT,
+      questionnaire JSON,
+      ai_score REAL,
+      ai_probability TEXT,
+      ai_verdict TEXT,
+      ai_writeup TEXT,
+      ai_evaluation JSON,
+      title_conflicts JSON,
+      submitted_at DATETIME,
+      evaluated_at DATETIME,
+      approved_at DATETIME,
+      approved_by TEXT,
+      approver_notes TEXT,
+      rejection_reason TEXT,
+      justification TEXT,
+      year INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS award_titles (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      category TEXT,
+      company_id TEXT,
+      company_name TEXT,
+      submission_id TEXT,
+      year INTEGER,
+      awarded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (company_id) REFERENCES users(id),
+      FOREIGN KEY (submission_id) REFERENCES submissions(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS notifications (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      link TEXT,
+      is_read INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      action TEXT NOT NULL,
+      actor TEXT NOT NULL,
+      actor_role TEXT,
+      target_id TEXT,
+      details TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_read);
+    CREATE INDEX IF NOT EXISTS idx_submissions_status ON submissions(status);
+    CREATE INDEX IF NOT EXISTS idx_award_titles_title ON award_titles(title);
+    CREATE INDEX IF NOT EXISTS idx_submissions_user ON submissions(user_id);
+  `);
+
+  // Seed default users
+  const seedUser = (email, password, role, company, contact) => {
+    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    if (!existing) {
+      const hash = bcrypt.hashSync(password, 10);
+      db.prepare(`INSERT INTO users (id, email, password, role, company_name, contact_person) VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(uuidv4(), email, hash, role, company, contact);
+    }
+  };
+
+  seedUser(process.env.ADMIN_EMAIL || 'admin@insightbridge.co', process.env.ADMIN_PASSWORD || 'Admin@2026', 'admin', 'Insightbridge Research & Consulting', 'Admin');
+  seedUser(process.env.APPROVER_EMAIL || 'approver@insightbridge.co', process.env.APPROVER_PASSWORD || 'Approver@2026', 'approver', 'Insightbridge Research & Consulting', 'Award Committee');
+  seedUser(process.env.AGENT_EMAIL || 'agent@globalbrandsmagazine.com', process.env.AGENT_PASSWORD || 'Agent@2026', 'agent', 'Global Brands Magazine', 'GBM Agent');
+
+  // Seed some award titles for dedup testing
+  const titleCount = db.prepare('SELECT COUNT(*) as c FROM award_titles').get().c;
+  if (titleCount === 0) {
+    const titles = [
+      ['Best Banking Brand UAE 2025', 'Banking & Finance', 'UAE National Bank', 2025],
+      ['Most Innovative Insurance Company MENA 2025', 'Insurance', 'Gulf Insurance Corp', 2025],
+      ['Best Digital Banking Platform Middle East 2025', 'Banking & Finance', 'Emirates Digital Bank', 2025],
+      ['Best Real Estate Developer GCC 2025', 'Real Estate', 'Al Habtoor Group', 2025],
+      ['Best Hospitality Brand Asia 2025', 'Hospitality', 'Taj Hotels', 2025],
+    ];
+    const stmt = db.prepare('INSERT INTO award_titles (id, title, category, company_name, year) VALUES (?, ?, ?, ?, ?)');
+    titles.forEach(t => stmt.run(uuidv4(), ...t));
+  }
+
+  return db;
+}
+
+module.exports = { initDB };
